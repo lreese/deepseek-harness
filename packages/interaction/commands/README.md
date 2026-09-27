@@ -65,6 +65,8 @@ An interactive adapter calls `execute(agent, line, attachments, signal)` with th
 
 The caller's abort signal stops the registry from awaiting a handler; a handler that ignores the signal may continue its own external side effects after the caller stops waiting. A cancelled or thrown handler settles as a `command/done` error in the log.
 
+The handler executes inside the receiving agent's initiator scope (`ctx.agents.withInitiator`), so capability calls it makes — for example a `ctx.fs` write — are attributed to the invoking session's sandbox policy (mode override and session cwd) rather than the agentless fallback root; without a composed agents registry the handler runs unattributed.
+
 -----
 
 <a id="understand-the-implementation"></a>

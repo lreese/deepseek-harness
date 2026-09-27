@@ -15,10 +15,16 @@
       "path": "../../../vendor/cordis"
     },
     {
+      "path": "../../core/agent"
+    },
+    {
       "path": "../fs"
     },
     {
       "path": "../fs-local"
+    },
+    {
+      "path": "../../core/session"
     },
     {
       "path": "../../sandbox/sandbox"

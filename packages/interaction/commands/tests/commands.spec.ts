@@ -3,6 +3,7 @@ import { Context } from '@deepseek-ai/cordis'
 import { createScope } from '@deepseek-ai/dsh-scope'
 import type { Scope } from '@deepseek-ai/dsh-scope'
 import type { Agent } from '@deepseek-ai/dsh-agent'
+import AgentRegistry from '@deepseek-ai/dsh-agent'
 import SessionStore, { SessionId } from '@deepseek-ai/dsh-session'
 import CommandRuntime, { CommandDefinitionId, parseCommand, type CommandDefinition } from '@deepseek-ai/dsh-commands'
 import { AttachmentStore } from '@deepseek-ai/dsh-attachment'
@@ -18,6 +19,7 @@ function command(name: string, text = `ran:${name}`): CommandDefinition {
 async function mount(): Promise<Context> {
   const ctx = new Context()
   await ctx.plugin(SessionStore)
+  await ctx.plugin(AgentRegistry)
   await ctx.plugin(CommandRuntime)
   return ctx
 }
@@ -196,6 +198,46 @@ describe('CommandRuntime', () => {
     await expect(ctx.commands.execute(agent, '/missing', [], controller.signal)).resolves.toBeUndefined()
   })
 
+  it('executes the handler inside the receiving agent initiator scope', async () => {
+    const ctx = await mount()
+    const { agent } = await mintAgentScope(ctx, 'a')
+    let sync: Agent | undefined
+    let afterAwait: Agent | undefined
+    ctx.commands.register({
+      name: 'probe',
+      description: 'Report the initiator',
+      handler: async () => {
+        sync = ctx.agents.currentInitiator()
+        await Promise.resolve()
+        afterAwait = ctx.agents.currentInitiator()
+        return { kind: 'success' }
+      },
+    })
+    await ctx.commands.execute(agent, '/probe', [], new AbortController().signal)
+    expect(sync).toBe(agent)
+    expect(afterAwait).toBe(agent)
+  })
+
+  it('runs handlers unattributed when no agents registry is composed (agentless composition)', async () => {
+    const ctx = new Context()
+    await ctx.plugin(SessionStore)
+    await ctx.plugin(CommandRuntime)
+    const session = ctx.sessions.create(SessionId('agentless'))
+    const agent = { id: session.id, session } as Agent
+    let ran = false
+    ctx.commands.register({
+      name: 'plain',
+      description: 'Run unattributed',
+      handler: () => {
+        ran = true
+        return { kind: 'success' }
+      },
+    })
+    expect((await ctx.commands.execute(agent, '/plain', [], new AbortController().signal))?.result)
+      .toEqual({ kind: 'success' })
+    expect(ran).toBe(true)
+  })
+
   it('stops awaiting an aborted handler and handles an already-aborted signal', async () => {
     const ctx = await mount()
     const { agent } = await mintAgentScope(ctx, 'a')
@@ -299,7 +341,7 @@ describe('CommandRuntime', () => {
     [{ ...command('bad-handler'), handler: undefined }, /handler/],
   ] as const)('rejects invalid definition %#', async (definition, expected) => {
     const ctx = await mount()
-    expect(() => ctx.commands.register(definition as CommandDefinition)).toThrow(expected)
+    expect(() => ctx.commands.register(definition as unknown as CommandDefinition)).toThrow(expected)
   })
 
   it('logs a paired command/run + command/done around a successful handler', async () => {

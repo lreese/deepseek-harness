@@ -74,6 +74,8 @@ The fence is a policy check in trusted code over a model-controlled path — not
 
 Each mutation resolves the per-call policy (`danger-full-access` returns the caller's target untouched; `read-only` throws `FS_SANDBOX_DENIED`), then for `workspace-write` re-canonicalizes the target immediately and requires containment under one of the writable roots derived from the single `writableRoots` function — the same set the Seatbelt profile grants, so the fs fence and the bash runner cannot drift. The fresh target is the one mutated, so a symlink ancestor swapped since the tool resolved it is caught.
 
+When no per-call policy is passed, the policy is resolved from the current initiator session when one is active (`ctx.agents.currentInitiator()` — command handlers and other plugin code run inside an initiator boundary), so a plugin's `ctx.fs` write inside the session workspace is fenced by that session's mode and cwd — the same principal as the chat agent's file tools — instead of the agentless fallback root. Outside initiator boundaries the deployment fallback (default mode + configured root) applies unchanged; only the principal resolution widens, never the writable scope.
+
 ### Threat model
 
 The residual resolve-to-syscall TOCTOU is narrowed by re-canonicalizing immediately before the write and is accepted for this threat model; a kernel-tight boundary would need `openat2`-class primitives whose portability cost is not worth it here. A denial is a structured `FsError`, not stderr inference — an in-process fence knows exactly what it refused.

@@ -27,10 +27,12 @@
  */
 
 import { Context } from '@deepseek-ai/cordis'
+import type {} from '@deepseek-ai/dsh-agent'
 import { LocalFileSystem } from '@deepseek-ai/dsh-fs-local'
 import type { Config as LocalConfig } from '@deepseek-ai/dsh-fs-local'
 import { FsError } from '@deepseek-ai/dsh-fs'
 import type { FsEditOutcome, FsEditRequest, FsTarget, FsVersion, FsWriteIntent, FsWriteOutcome } from '@deepseek-ai/dsh-fs'
+import type { Session } from '@deepseek-ai/dsh-session'
 import { writableRoots } from '@deepseek-ai/dsh-sandbox'
 import type { SandboxExecutionPolicy, SandboxMode } from '@deepseek-ai/dsh-sandbox'
 import type {} from '@deepseek-ai/dsh-sandbox-policy'
@@ -50,7 +52,10 @@ export type Config = LocalConfig
  * swap — the model-facing tools are untouched). Its configured default mode is
  * the capability fact exposed by {@link sandboxMode}; `dsh-tool-fs` resolves
  * each session's mode and cwd into a policy for every mutation, while an
- * approved escalation may stamp a strictly wider mode for one call.
+ * approved escalation may stamp a strictly wider mode for one call. A
+ * mutation that carries no per-call policy resolves the current initiator
+ * session when one is active, attributing plugin-initiated `ctx.fs` writes
+ * (slash-command handlers) to the invoking session.
  */
 export class SandboxedFileSystem extends LocalFileSystem {
   static inject = ['sandboxPolicy']
@@ -109,6 +114,34 @@ export class SandboxedFileSystem extends LocalFileSystem {
   }
 
   /**
+   * The session of the agent that initiated the inherited asynchronous call
+   * chain, when the agents registry is composed and an initiator boundary is
+   * active. Plugin code (slash-command handlers, route handlers wrapped by
+   * their owning plugin) runs inside such a boundary, so its `ctx.fs` writes
+   * are attributed to the invoking session — the same principal, mode
+   * override, and workspace root as the chat agent's file tools — instead of
+   * the agentless fallback root (issue: plugin `ctx.fs` writes denied under
+   * `workspace-write`). Containment is unchanged: only the principal
+   * resolution widens, never the writable scope.
+   * @returns the initiator session request for `sandboxPolicy.resolve`, or
+   *   `undefined` for the agentless fallback outside initiator boundaries.
+   */
+  private initiatorSession(): { session: Session } | undefined {
+    const agents = this.ctx.get('agents')
+    if (agents === undefined) return undefined
+    try {
+      const session = agents.currentInitiator()?.session
+      return session === undefined ? undefined : { session }
+    } catch {
+      // The registry's initiator bookkeeping is disposed (teardown or HMR
+      // unload) and its reads fail even though this fence is still live:
+      // attribute nothing and let the agentless fallback apply.
+      /* v8 ignore next 2 -- disposed-but-resolvable occurs only inside the registry's own fiber unload, not composable here */
+      return undefined
+    }
+  }
+
+  /**
    * Enforce the per-call policy against `target` and return the EXACT target the
    * mutation must use, so the checked identity is the mutated one (no
    * check-here-write-there TOCTOU). `read-only` denies; `workspace-write`
@@ -120,7 +153,7 @@ export class SandboxedFileSystem extends LocalFileSystem {
    * and the escalation hint.
    */
   private async checkedTarget(target: FsTarget, sandboxPolicy?: SandboxExecutionPolicy): Promise<FsTarget> {
-    const policy = sandboxPolicy ?? this.ctx.sandboxPolicy.resolve()
+    const policy = sandboxPolicy ?? this.ctx.sandboxPolicy.resolve(this.initiatorSession())
     const { mode } = policy
     if (mode === 'danger-full-access') return target
     if (mode === 'read-only') {

@@ -332,6 +332,10 @@ export class CommandRuntime extends TypertRemoteService {
   /**
    * Parse and execute a known command without sending it to the model.
    *
+   * The handler executes inside the receiving agent's initiator scope, so
+   * capability calls it makes (for example `ctx.fs` writes) are attributed to
+   * the invoking session's sandbox policy rather than the agentless fallback.
+   *
    * A resolved command's lifecycle is logged: `command/run` is appended
    * before the handler is invoked and `command/done` after settlement (a
    * thrown or aborted handler settles as `kind: 'error'`). Both are direct
@@ -421,13 +425,30 @@ export class CommandRuntime extends TypertRemoteService {
     const invocation = Object.freeze({ commandId, agent, rawInput: parsed.rawInput, attachments, signal })
     let result: CommandResult
     try {
-      const output = command.definition.handler(invocation)
+      const output = this.asInitiator(agent, () => command.definition.handler(invocation))
       result = normalizeResult(parsed.name, await withAbort(Promise.resolve(output), signal))
     } catch (error: unknown) {
       this.settleThrown(agent.session, parsed.name, commandId, error)
       throw error
     }
     return settle(result)
+  }
+
+  /**
+   * Run one operation as the receiving agent's process-local initiator so
+   * downstream capabilities attribute it to the invoking session — a command
+   * handler's `ctx.fs` write is fenced by that session's sandbox policy
+   * (mode override + session cwd), the same principal as the chat agent's
+   * file tools, instead of the agentless fallback root. Without a composed
+   * agents registry the operation runs unattributed, preserving the
+   * agentless composition's behavior.
+   * @param agent - exact receiving agent.
+   * @param operation - the handler invocation to attribute.
+   * @returns the exact value returned by `operation`.
+   */
+  private asInitiator<T>(agent: Agent, operation: () => T): T {
+    const agents = this.ctx.get('agents')
+    return agents === undefined ? operation() : agents.withInitiator(agent, operation)
   }
 
   /** Contained `command/done` error append for a thrown handler or admission failure. */
